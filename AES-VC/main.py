@@ -7,6 +7,9 @@ Original file is located at
     https://colab.research.google.com/drive/1H-LAXTcnBvVJATtcyCl8_g1hdAG0xZeS
 """
 
+# import os
+# print("Current Working Directory:", os.getcwd())
+
 import base64
 from PIL import Image
 with open("test.jpg", "rb") as img_file:
@@ -20,6 +23,7 @@ K = "Hello, World. ThisIsMyKey."
 
 SK = hashlib.sha256(K.encode()) 
 
+#key that goes to AES
 print("The hexadecimal equivalent of SHA256 is : ") 
 print(SK.hexdigest())
 
@@ -88,13 +92,17 @@ for i in range(h):
         p = R[i][j][0] ^ C[i][j][0]
         P[i][j][0] = p
 
-# print(np.unique(R[:, :, 0]))
+print(np.unique(R[:, :, 0]))
 
 import matplotlib.pyplot as plt
 plt.imshow(P)
+plt.title("This is the 1st pattern share made from c, called P")
+plt.axis('off')  # Turn off axes for better visualization
 plt.show()
 
 plt.imshow(R)
+plt.title("This is the 2nd random share made from c, called R")
+
 plt.show()
 
 filename = 'shares/R.png'
@@ -210,7 +218,7 @@ f.close()
 cipher = text
 
 P = cv2.imread('shares/P.png')
-R = cv2.imread('shares/R.png')
+R = cv2.imread('shares/test.jpg')
 
 h = np.shape(P)[0]
 w = np.shape(P)[1]
