@@ -1,6 +1,10 @@
 import streamlit as st
 import os
 import base64
+import uuid
+import json
+import time
+from datetime import datetime, timedelta
 from aes_utils import (
     generate_aes_key,
     encrypt_image_aes,
@@ -11,7 +15,6 @@ from aes_utils import (
 from vc_utils import generate_shares, combine_shares
 import tempfile
 import shutil
-
 from PIL import Image, ImageDraw, ImageChops
 import numpy as np
 import imageio
@@ -38,6 +41,19 @@ if 'shares_dir' not in st.session_state:
     st.session_state.shares_dir = None
 if 'shares_generated' not in st.session_state:
     st.session_state.shares_generated = False
+if 'session_id' not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+if 'shared_storage_dir' not in st.session_state:
+    st.session_state.shared_storage_dir = os.path.join(tempfile.gettempdir(), "multi_party_shares")
+    os.makedirs(st.session_state.shared_storage_dir, exist_ok=True)
+if 'decryption_sessions' not in st.session_state:
+    st.session_state.decryption_sessions = {}
+if 'current_session_id' not in st.session_state:
+    st.session_state.current_session_id = None
+if 'encrypted_file_uploaded' not in st.session_state:
+    st.session_state.encrypted_file_uploaded = False
+if 'aes_key_entered' not in st.session_state:
+    st.session_state.aes_key_entered = False
 
 def display_image(image_path, caption):
     """Helper function to display images"""
@@ -72,8 +88,8 @@ def create_share_animation(share_paths, output_path):
         return img_plot,
     
     # Create animation
-    anim = FuncAnimation(fig, update, frames=len(shares), 
-                        interval=1000, blit=True)
+    anim = FuncAnimation(fig, update, frames=len(shares),
+                         interval=1000, blit=True)
     
     # Save as GIF
     anim.save(output_path, writer='pillow', fps=1, dpi=100)
@@ -103,14 +119,23 @@ def create_decryption_visualization(encrypted_img_path, key, output_path):
     plt.savefig(output_path)
     plt.close()
 
+def save_uploaded_file(uploaded_file, save_path):
+    """Save an uploaded file to the specified path"""
+    if uploaded_file is not None:
+        with open(save_path, "wb") as f:
+            f.write(uploaded_file.getvalue())
+        return True
+    return False
+
 def main():
     st.title("🔒 AES-128 + Visual Cryptography Image Security")
+    
     st.write("""
     Secure image sharing using AES-128 encryption and Visual Cryptography (2-7 users).
     """)
-
-    tab1, tab2 = st.tabs(["Encrypt & Share", "Decrypt"])
-
+    
+    tab1, tab2 = st.tabs(["Encrypt & Share", "Decrypt Image (Multi-Party)"])
+    
     with tab1:
         st.header("Encrypt and Share Image")
         
@@ -129,10 +154,10 @@ def main():
                 try:
                     st.session_state.aes_key = generate_aes_key()
                     st.success("AES-128 Key generated!")
-                    st.text_area("Your AES Key (save securely)", 
-                               value=key_to_base64(st.session_state.aes_key),
-                               disabled=True,
-                               key="key_display")
+                    st.text_area("Your AES Key (save securely)",
+                                value=key_to_base64(st.session_state.aes_key),
+                                disabled=True,
+                                key="key_display")
                 except Exception as e:
                     st.error(f"Key generation failed: {str(e)}")
             
@@ -141,19 +166,19 @@ def main():
                     with st.spinner("Encrypting..."):
                         st.session_state.encrypted_data = encrypt_image_aes(original_path, st.session_state.aes_key)
                         st.success("Image encrypted!")
-                    
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".enc") as tmp_file:
-                        tmp_file.write(st.session_state.encrypted_data)
-                        encrypted_path = tmp_file.name
-                    
-                    with open(encrypted_path, "rb") as f:
-                        st.download_button(
-                            label="Download Encrypted Image",
-                            data=f,
-                            file_name="encrypted.enc",
-                            mime="application/octet-stream",
-                            key="dl_encrypted"
-                        )
+                        
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".enc") as tmp_file:
+                            tmp_file.write(st.session_state.encrypted_data)
+                            encrypted_path = tmp_file.name
+                        
+                        with open(encrypted_path, "rb") as f:
+                            st.download_button(
+                                label="Download Encrypted Image",
+                                data=f,
+                                file_name="encrypted.enc",
+                                mime="application/octet-stream",
+                                key="dl_encrypted"
+                            )
                 except Exception as e:
                     st.error(f"Encryption failed: {str(e)}")
             
@@ -173,6 +198,7 @@ def main():
                             st.session_state.share_paths, st.session_state.shares_dir = generate_shares(
                                 encrypted_data_path, num_users, temp_dir
                             )
+                            
                             st.session_state.shares_generated = True
                             st.success(f"{num_users} shares created!")
                             
@@ -194,320 +220,298 @@ def main():
                                         mime="application/zip",
                                         key="dl_all_shares"
                                     )
-                            
-                            # Display individual download buttons in columns
-                            cols = st.columns(3)
-                            for i, share_path in enumerate(st.session_state.share_paths):
-                                with open(share_path, 'rb') as f:
-                                    cols[i%3].download_button(
-                                        label=f"Download Share {i+1}",
-                                        data=f,
-                                        file_name=f"share_{i+1}.png",
-                                        mime="image/png",
-                                        key=f"dl_share_{i}"
-                                    )
+                                
+                                # Display individual download buttons in columns
+                                cols = st.columns(3)
+                                for i, share_path in enumerate(st.session_state.share_paths):
+                                    with open(share_path, 'rb') as f:
+                                        cols[i%3].download_button(
+                                            label=f"Download Share {i+1}",
+                                            data=f,
+                                            file_name=f"share_{i+1}.png",
+                                            mime="image/png",
+                                            key=f"dl_share_{i}"
+                                        )
                     except Exception as e:
                         st.error(f"Share generation failed: {str(e)}")
-
+    
     with tab2:
-        st.header("Decrypt Image")
-        st.markdown("""
-        ### Decryption Process Steps:
-        1. **Verify AES Key** - Check key format and validity
-        2. **Verify Shares** - Ensure all shares are valid and compatible
-        3. **Combine Shares** - Reconstruct encrypted data from shares
-        4. **Verify Data** - Check reconstructed data matches uploaded file
-        5. **Decrypt Image** - Final decryption with AES
-        """)
+        st.header("Decrypt Image (Multi-Party)")
         
-        key_input = st.text_area("Enter AES-128 Key (base64)", key="key_input", 
-                            help="Paste the base64-encoded AES key you received during encryption")
+        # Session management section
+        st.subheader("Session Management")
+        session_col1, session_col2 = st.columns(2)
         
-        encrypted_file = st.file_uploader("Upload encrypted image", type=["enc"], key="enc_uploader",
-                                        help="Upload the .enc file you received during encryption")
-        
-        num_shares = st.slider("Number of shares required", 2, 7, 2, key="share_slider2",
-                            help="Select how many shares were used during encryption")
-        
-        share_files = []
-        for i in range(num_shares):
-            share_file = st.file_uploader(
-                f"Upload Share {i+1}", 
-                type=["png", "jpg", "jpeg"], 
-                key=f"share_upload_{i}",
-                help=f"Upload visual cryptography share {i+1} (PNG/JPG format)"
+        with session_col1:
+            session_mode = st.radio(
+                "Select Mode",
+                ["Create New Session", "Join Existing Session"],
+                key="session_mode"
             )
-            if share_file:
-                share_files.append(share_file)
         
-        if st.button("Begin Decryption", key="decrypt", type="primary") and key_input and encrypted_file and len(share_files) == num_shares:
-            # Initialize progress tracking
-            progress_bar = st.progress(0)
-            status_box = st.empty()
-            details_box = st.expander("Decryption Details", expanded=True)
+        # Create new session
+        if session_mode == "Create New Session":
+            with session_col2:
+                num_parties = st.slider("Number of parties required", 2, 7, 2, key="num_parties")
+                
+            if st.button("Create Decryption Session", key="create_session") or st.session_state.current_session_id:
+                # Generate a unique session ID if we don't have one
+                if not st.session_state.current_session_id:
+                    session_id = str(uuid.uuid4())[:8]
+                    st.session_state.current_session_id = session_id
+                    
+                    # Create session directory
+                    session_dir = os.path.join(st.session_state.shared_storage_dir, session_id)
+                    os.makedirs(session_dir, exist_ok=True)
+                    
+                    # Store session metadata
+                    session_meta = {
+                        "created_at": datetime.now().isoformat(),
+                        "expires_at": (datetime.now() + timedelta(hours=24)).isoformat(),
+                        "required_shares": num_parties,
+                        "uploaded_shares": 0,
+                        "creator": st.session_state.session_id,
+                        "status": "active"
+                    }
+                    
+                    with open(os.path.join(session_dir, "metadata.json"), "w") as f:
+                        json.dump(session_meta, f)
+                else:
+                    session_id = st.session_state.current_session_id
+                    session_dir = os.path.join(st.session_state.shared_storage_dir, session_id)
+                    
+                    # Load existing metadata
+                    with open(os.path.join(session_dir, "metadata.json"), "r") as f:
+                        session_meta = json.load(f)
+                
+                st.success(f"Session created! Share this code with all parties: **{session_id}**")
+                st.info("Each party should join this session and upload their share.")
+                
+                # Store encrypted file upload field
+                encrypted_file = st.file_uploader(
+                    "Upload encrypted image (only session creator)",
+                    type=["enc"],
+                    key="enc_uploader",
+                    help="Upload the .enc file received during encryption"
+                )
+                
+                encrypted_path = os.path.join(session_dir, "encrypted.enc")
+                
+                # Check if we already uploaded the file
+                if os.path.exists(encrypted_path):
+                    st.session_state.encrypted_file_uploaded = True
+                    st.success("Encrypted file already uploaded!")
+                
+                # Handle new upload
+                if encrypted_file and not st.session_state.encrypted_file_uploaded:
+                    save_uploaded_file(encrypted_file, encrypted_path)
+                    st.session_state.encrypted_file_uploaded = True
+                    st.success("Encrypted file uploaded successfully!")
+                
+                # Store AES key field
+                key_input = st.text_area(
+                    "Enter AES-128 Key (only session creator)",
+                    key="key_input",
+                    help="Paste the base64-encoded AES key received during encryption"
+                )
+                
+                key_path = os.path.join(session_dir, "aes_key.txt")
+                
+                # Check if we already entered the key
+                if os.path.exists(key_path):
+                    st.session_state.aes_key_entered = True
+                    st.success("AES key already stored!")
+                
+                # Handle new key input
+                if key_input and len(key_input) > 0 and not st.session_state.aes_key_entered:
+                    with open(key_path, "w") as f:
+                        f.write(key_input)
+                    st.session_state.aes_key_entered = True
+                    st.success("AES key stored successfully!")
+        
+        # Join existing session
+        else:
+            with session_col2:
+                session_id = st.text_input("Enter Session ID", key="join_session_id")
             
-            try:
-                # Step 1: Verify AES Key
-                progress_bar.progress(10)
-                status_box.info("🔍 **Step 1/5**: Verifying AES key...")
-                details_box.write("""
-                **Key Verification Process:**
-                - Checking base64 format validity
-                - Validating key length (128-bit)
-                """)
+            if session_id and len(session_id) > 0:
+                session_dir = os.path.join(st.session_state.shared_storage_dir, session_id)
                 
-                try:
-                    aes_key = base64_to_key(key_input)
-                    if len(aes_key) != 16:
-                        raise ValueError("Key must be 16 bytes (128-bit)")
+                if not os.path.exists(session_dir):
+                    st.error("Session not found. Please check the ID and try again.")
+                else:
+                    # Store the current session ID
+                    st.session_state.current_session_id = session_id
                     
-                    # Visualize the key
-                    key_bytes = np.frombuffer(aes_key, dtype=np.uint8).reshape(4,4)
-                    fig, ax = plt.subplots(figsize=(4,4))
-                    im = ax.imshow(key_bytes, cmap='viridis')
-                    plt.colorbar(im, ax=ax, orientation='horizontal')
-                    ax.set_title("Your AES Key (Visualized)")
-                    ax.axis('off')
-                    key_viz_path = os.path.join(tempfile.gettempdir(), "key_viz.png")
-                    plt.savefig(key_viz_path, bbox_inches='tight')
-                    plt.close()
-                    
-                    details_box.success("✅ Key verified successfully")
-                    details_box.image(key_viz_path, caption="Visualization of your AES key")
-                except Exception as e:
-                    progress_bar.progress(0)
-                    status_box.error("❌ **Key Verification Failed**")
-                    details_box.error(f"""
-                    **Error Details:**
-                    {str(e)}
-                    
-                    **Possible Solutions:**
-                    - Ensure you copied the entire key
-                    - Verify the key hasn't been modified
-                    - Try generating a new key if this one is lost
-                    """)
-                    raise
-                
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    # Step 2: Verify Shares
-                    progress_bar.progress(25)
-                    status_box.info("🔍 **Step 2/5**: Verifying shares...")
-                    share_paths = []
-                    share_previews = []
-                    
-                    details_box.write("""
-                    **Share Verification Process:**
-                    - Checking file integrity
-                    - Validating image formats
-                    - Comparing dimensions
-                    """)
-                    
-                    # Create a grid to show all shares
-                    share_grid_cols = st.columns(4)
-                    share_grid_idx = 0
-                    
-                    for i, share_file in enumerate(share_files):
-                        share_path = os.path.join(temp_dir, f"share_{i+1}.png")
-                        with open(share_path, "wb") as f:
-                            f.write(share_file.getvalue())
-                        share_paths.append(share_path)
-                        
-                        # Verify share image
-                        try:
-                            share_img = Image.open(share_path)
-                            share_previews.append(share_img)
-                            
-                            # Show in grid
-                            if share_grid_idx < len(share_grid_cols):
-                                with share_grid_cols[share_grid_idx]:
-                                    st.image(share_img, caption=f"Share {i+1}", width=150)
-                                share_grid_idx += 1
-                                
-                            details_box.write(f"✅ Share {i+1}: Valid ({share_img.size[0]}×{share_img.size[1]} pixels)")
-                        except Exception as e:
-                            details_box.error(f"❌ Share {i+1}: Invalid - {str(e)}")
-                            raise
-                    
-                    # Step 3: Combine Shares (with visualization)
-                    progress_bar.progress(50)
-                    status_box.info("🔍 **Step 3/5**: Combining shares...")
-                    details_box.write("""
-                    **Share Combination Process:**
-                    - Performing visual cryptography reconstruction
-                    - Validating output data structure
-                    """)
-                    
-                    # Create animation of share combination
-                    animation_path = os.path.join(temp_dir, "share_animation.gif")
-                    
-                    # Generate frames for animation
-                    frames = []
-                    current_combined = None
-                    
-                    for i, share_path in enumerate(share_paths):
-                        share_img = Image.open(share_path).convert('L')
-                        if current_combined is None:
-                            current_combined = share_img
-                        else:
-                            current_combined = ImageChops.logical_xor(
-                                current_combined.convert('1'), 
-                                share_img.convert('1')
-                            ).convert('L')
-                        
-                        # Create frame
-                        fig, ax = plt.subplots(figsize=(6,4))
-                        ax.imshow(current_combined, cmap='gray')
-                        ax.set_title(f"After combining {i+1} shares", pad=10)
-                        ax.axis('off')
-                        
-                        # Save frame to buffer
-                        buf = io.BytesIO()
-                        plt.savefig(buf, format='png', bbox_inches='tight', dpi=100)
-                        plt.close()
-                        buf.seek(0)
-                        frames.append(imageio.imread(buf))
-                    
-                    # Save as GIF
-                    imageio.mimsave(animation_path, frames, duration=1.5)
-                    
-                    # Show animation
-                    st.markdown("### Share Combination Process")
-                    st.image(animation_path, use_column_width=True)
-                    
-                    # Perform actual combination
-                    success, combined_data, error_msg = combine_shares(share_paths)
-                    if not success:
-                        progress_bar.progress(0)
-                        status_box.error("❌ **Share Combination Failed**")
-                        details_box.error(f"""
-                        **Error Details:**
-                        {error_msg}
-                        
-                        **Possible Solutions:**
-                        - Ensure all shares are from the same set
-                        - Verify no shares have been modified
-                        - Check you're using the correct number of shares
-                        """)
-                        raise ValueError(error_msg)
-                    
-                    details_box.success(f"✅ Successfully combined {len(share_paths)} shares")
-                    details_box.write(f"Reconstructed data size: {len(combined_data)} bytes")
-                    
-                    # Step 4: Verify Reconstructed Data
-                    progress_bar.progress(75)
-                    status_box.info("🔍 **Step 4/5**: Verifying encrypted data...")
-                    encrypted_path = os.path.join(temp_dir, "encrypted.enc")
-                    with open(encrypted_path, "wb") as f:
-                        f.write(encrypted_file.getvalue())
-                    
-                    uploaded_data = open(encrypted_path, "rb").read()
-                    if combined_data != uploaded_data:
-                        progress_bar.progress(0)
-                        status_box.error("❌ **Data Mismatch Detected**")
-                        details_box.error(f"""
-                        **Security Alert**: 
-                        Reconstructed data doesn't match uploaded encrypted file
-                        
-                        Uploaded size: {len(uploaded_data)} bytes
-                        Reconstructed size: {len(combined_data)} bytes
-                        Difference: {abs(len(uploaded_data) - len(combined_data))} bytes
-                        
-                        **This suggests:**
-                        - Shares may be from different sets
-                        - Encrypted file may be corrupted
-                        - Possible tampering detected
-                        """)
-                        raise ValueError("Reconstructed data mismatch")
-                    
-                    details_box.success("✅ Encrypted data verified successfully")
-                    
-                    # Step 5: Decrypt Image (with visualization)
-                    progress_bar.progress(90)
-                    status_box.info("🔍 **Step 5/5**: Decrypting image...")
-                    decrypted_path = os.path.join(temp_dir, "decrypted.png")
-                    
-                    # Create visualization of decryption process
-                    st.markdown("### Decryption Process Visualization")
-                    
-                    # Create sample visualization of encrypted data
-                    sample_size = min(10000, len(combined_data))
-                    encrypted_sample = combined_data[:sample_size]
-                    encrypted_img = Image.frombytes('L', (100, 100), encrypted_sample.ljust(10000, b'\0')[:10000])
-                    
-                    # Create visualization figure
-                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12,5))
-                    
-                    # Encrypted data visualization
-                    ax1.imshow(encrypted_img, cmap='gray')
-                    ax1.set_title("Encrypted Data Sample")
-                    ax1.axis('off')
-                    
-                    # Key application visualization
-                    key_bytes = np.frombuffer(aes_key, dtype=np.uint8)
-                    key_heatmap = np.tile(key_bytes, (16,1))
-                    im = ax2.imshow(key_heatmap, cmap='viridis')
-                    plt.colorbar(im, ax=ax2, orientation='horizontal')
-                    ax2.set_title("AES Key Application")
-                    ax2.axis('off')
-                    
-                    viz_path = os.path.join(temp_dir, "decrypt_viz.png")
-                    plt.savefig(viz_path, bbox_inches='tight')
-                    plt.close()
-                    
-                    st.image(viz_path, use_column_width=True)
-                    
-                    # Perform actual decryption
+                    # Load session metadata
                     try:
-                        if decrypt_image_aes(combined_data, aes_key, decrypted_path):
-                            progress_bar.progress(100)
-                            status_box.success("🎉 **Decryption Successful!**")
-                            st.balloons()
-                            
-                            # Display results
-                            st.markdown("### Decryption Results")
-                            
-                            # Before/After comparison
-                            st.markdown("**Before and After Comparison**")
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.image(encrypted_img, caption="Encrypted Data", use_column_width=True)
-                            with col2:
-                                decrypted_img = Image.open(decrypted_path)
-                                st.image(decrypted_img, caption="Decrypted Image", use_column_width=True)
-                            
-                            # File info
-                            st.markdown("**File Information**")
-                            st.write(f"Original size: {len(combined_data)} bytes")
-                            st.write(f"Decrypted size: {os.path.getsize(decrypted_path)} bytes")
-                            
-                            # Download button
-                            with open(decrypted_path, "rb") as f:
-                                st.download_button(
-                                    label="Download Decrypted Image",
-                                    data=f,
-                                    file_name="decrypted.png",
-                                    mime="image/png",
-                                    key="dl_decrypted_final"
-                                )
-                        else:
-                            raise Exception("Decryption returned False without error")
-                    except Exception as e:
-                        progress_bar.progress(0)
-                        status_box.error("❌ **Decryption Failed**")
-                        details_box.error(f"""
-                        **Error Details:**
-                        {str(e)}
+                        with open(os.path.join(session_dir, "metadata.json"), "r") as f:
+                            session_meta = json.load(f)
                         
-                        **Possible Solutions:**
-                        - Double-check your AES key
-                        - Verify all shares are correct
-                        - Ensure encrypted file wasn't modified
-                        - Try the encryption process again if needed
-                        """)
-                        raise
-                
-            except Exception as e:
-                st.error("Decryption process aborted due to errors")
-                st.stop()
+                        # Check if session is active
+                        if session_meta["status"] != "active":
+                            st.error("This session is no longer active.")
+                        else:
+                            st.success(f"Joined session: {session_id}")
+                            
+                            # Display session info
+                            st.info(f"""
+                            **Session Information:**
+                            - Created: {session_meta['created_at']}
+                            - Expires: {session_meta['expires_at']}
+                            - Required shares: {session_meta['required_shares']}
+                            - Shares uploaded: {session_meta['uploaded_shares']}
+                            """)
+                            
+                            # Share upload
+                            st.subheader("Upload Your Share")
+                            party_name = st.text_input("Your name/identifier", key="party_name")
+                            
+                            if party_name:
+                                # Check if this party already uploaded a share
+                                share_path = os.path.join(session_dir, f"share_{party_name}.png")
+                                if os.path.exists(share_path):
+                                    st.success(f"You've already uploaded your share as {party_name}!")
+                                else:
+                                    share_file = st.file_uploader(
+                                        "Upload your share",
+                                        type=["png", "jpg", "jpeg"],
+                                        key=f"party_share_upload_{party_name}"
+                                    )
+                                    
+                                    if share_file:
+                                        # Save share to session directory
+                                        save_uploaded_file(share_file, share_path)
+                                        
+                                        # Update metadata
+                                        session_meta["uploaded_shares"] += 1
+                                        with open(os.path.join(session_dir, "metadata.json"), "w") as f:
+                                            json.dump(session_meta, f)
+                                        
+                                        st.success(f"Share uploaded successfully! ({session_meta['uploaded_shares']}/{session_meta['required_shares']} shares)")
+                            
+                            # Check if all shares are uploaded
+                            if session_meta["uploaded_shares"] >= session_meta["required_shares"]:
+                                st.success("All required shares have been uploaded!")
+                                
+                                # Check if we have the encrypted file and key
+                                enc_path = os.path.join(session_dir, "encrypted.enc")
+                                key_path = os.path.join(session_dir, "aes_key.txt")
+                                
+                                if os.path.exists(enc_path) and os.path.exists(key_path):
+                                    if st.button("Begin Decryption", key="begin_multi_decrypt"):
+                                        # Get all share files
+                                        share_files = [f for f in os.listdir(session_dir) if f.startswith("share_")]
+                                        share_paths = [os.path.join(session_dir, f) for f in share_files]
+                                        
+                                        # Read key
+                                        with open(key_path, "r") as f:
+                                            key_input = f.read()
+                                        
+                                        # Initialize progress tracking
+                                        progress_bar = st.progress(0)
+                                        status_box = st.empty()
+                                        details_box = st.expander("Decryption Details", expanded=True)
+                                        
+                                        try:
+                                            # Step 1: Verify AES Key
+                                            progress_bar.progress(10)
+                                            status_box.info("🔍 **Step 1/5**: Verifying AES key...")
+                                            
+                                            try:
+                                                aes_key = base64_to_key(key_input)
+                                                if len(aes_key) != 16:
+                                                    raise ValueError("Key must be 16 bytes (128-bit)")
+                                                details_box.success("✅ Key verified successfully")
+                                            except Exception as e:
+                                                progress_bar.progress(0)
+                                                status_box.error("❌ **Key Verification Failed**")
+                                                details_box.error(f"Error: {str(e)}")
+                                                raise
+                                            
+                                            # Step 2: Verify Shares
+                                            progress_bar.progress(25)
+                                            status_box.info("🔍 **Step 2/5**: Verifying shares...")
+                                            
+                                            # Display share info
+                                            details_box.write(f"Found {len(share_paths)} shares from different parties:")
+                                            for i, path in enumerate(share_paths):
+                                                party = os.path.basename(path).replace("share_", "").replace(".png", "")
+                                                details_box.write(f"- Share from: {party}")
+                                            
+                                            # Step 3: Combine Shares
+                                            progress_bar.progress(50)
+                                            status_box.info("🔍 **Step 3/5**: Combining shares...")
+                                            
+                                            # Perform actual combination
+                                            success, combined_data, error_msg = combine_shares(share_paths)
+                                            
+                                            if not success:
+                                                progress_bar.progress(0)
+                                                status_box.error("❌ **Share Combination Failed**")
+                                                details_box.error(f"Error: {error_msg}")
+                                                raise ValueError(error_msg)
+                                            
+                                            details_box.success(f"✅ Successfully combined {len(share_paths)} shares")
+                                            
+                                            # Step 4: Verify Reconstructed Data
+                                            progress_bar.progress(75)
+                                            status_box.info("🔍 **Step 4/5**: Verifying encrypted data...")
+                                            
+                                            with open(enc_path, "rb") as f:
+                                                uploaded_data = f.read()
+                                            
+                                            if combined_data != uploaded_data:
+                                                progress_bar.progress(0)
+                                                status_box.error("❌ **Data Mismatch Detected**")
+                                                details_box.error("Reconstructed data doesn't match uploaded encrypted file")
+                                                raise ValueError("Reconstructed data mismatch")
+                                            
+                                            details_box.success("✅ Encrypted data verified successfully")
+                                            
+                                            # Step 5: Decrypt Image
+                                            progress_bar.progress(90)
+                                            status_box.info("🔍 **Step 5/5**: Decrypting image...")
+                                            
+                                            decrypted_path = os.path.join(session_dir, "decrypted.png")
+                                            
+                                            # Perform actual decryption
+                                            if decrypt_image_aes(combined_data, aes_key, decrypted_path):
+                                                progress_bar.progress(100)
+                                                status_box.success("🎉 **Decryption Successful!**")
+                                                st.balloons()
+                                                
+                                                # Display results
+                                                st.markdown("### Decryption Results")
+                                                decrypted_img = Image.open(decrypted_path)
+                                                st.image(decrypted_img, caption="Decrypted Image", use_column_width=True)
+                                                
+                                                # Download button
+                                                with open(decrypted_path, "rb") as f:
+                                                    st.download_button(
+                                                        label="Download Decrypted Image",
+                                                        data=f,
+                                                        file_name="decrypted.png",
+                                                        mime="image/png",
+                                                        key="dl_decrypted_multi"
+                                                    )
+                                                
+                                                # Update session status
+                                                session_meta["status"] = "completed"
+                                                with open(os.path.join(session_dir, "metadata.json"), "w") as f:
+                                                    json.dump(session_meta, f)
+                                            else:
+                                                raise Exception("Decryption returned False without error")
+                                        
+                                        except Exception as e:
+                                            progress_bar.progress(0)
+                                            status_box.error("❌ **Decryption Failed**")
+                                            details_box.error(f"Error: {str(e)}")
+                                            st.error("Decryption process aborted due to errors")
+                                else:
+                                    st.warning("Waiting for session creator to upload encrypted file and AES key.")
+                    except Exception as e:
+                        st.error(f"Error loading session: {str(e)}")
+
 if __name__ == "__main__":
     main()
