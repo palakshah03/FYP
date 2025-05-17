@@ -23,6 +23,45 @@ from matplotlib.animation import FuncAnimation
 from IPython.display import HTML
 import io
 import threading
+import re
+
+# ========== AUTHENTICATION SECTION ==========
+VALID_USERS = {
+    "main":"60003210201",
+    "nihar": "60003210200",
+    "darsh": "60003210215",
+    "palak": "60003210217"
+}
+
+def clean_username(username):
+    return re.sub(r'\s+', '', username).lower()
+
+def authenticate(username, password):
+    clean_user = clean_username(username)
+    return clean_user in VALID_USERS and password == VALID_USERS[clean_user]
+
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'username' not in st.session_state:
+    st.session_state.username = None
+
+if not st.session_state.authenticated:
+    st.set_page_config(page_title="Bank Vault Login", page_icon="🔒", layout="wide")
+    st.title("🔒 Bank Vault Authentication")
+    with st.form("auth_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
+        if submitted:
+            cleaned_user = clean_username(username)
+            if authenticate(cleaned_user, password):
+                st.session_state.authenticated = True
+                st.session_state.username = cleaned_user
+                st.rerun()
+            else:
+                st.error("Invalid credentials - Access denied")
+    st.stop()
+# ========== END AUTHENTICATION SECTION ==========
 
 # Page configuration
 st.set_page_config(
@@ -98,16 +137,7 @@ st.markdown("""
         margin: 10px 0;
         background-color: #1b263b;
     }
-    .auto-refresh {
-        display: none;
-    }
 </style>
-<script>
-    function autoRefresh() {
-        window.location.reload();
-    }
-    setTimeout(autoRefresh, 3000);
-</script>
 """, unsafe_allow_html=True)
 
 # Session state initialization
@@ -224,33 +254,34 @@ def display_vault_files():
     if pdf_files:
         st.success(f"Found {len(pdf_files)} PDF files in the directory.")
         
-        for file_name in pdf_files:
+        for i, file_name in enumerate(pdf_files):
             try:
                 with open(file_name, "rb") as f:
                     file_bytes = f.read()
+                    # Use a unique key for each download button by adding an index
                     st.download_button(
                         label=f"📄 Download {file_name}",
                         data=file_bytes,
                         file_name=file_name,
                         mime="application/pdf",
-                        key=f"dl_{file_name}"
+                        key=f"dl_file_{i}"
                     )
                 st.write(f"**File:** {file_name} - Confidential Document")
             except Exception as e:
                 st.error(f"Error with file {file_name}: {str(e)}")
     else:
         st.warning("No PDF files found in the current directory.")
-        # List all files in the directory to help debug
-        all_files = os.listdir(current_dir)
-        st.write("All files in directory:")
-        for file in all_files:
-            st.write(f"- {file}")
     
     st.markdown("</div>", unsafe_allow_html=True)
 
 def mark_vault_unlocked(session_id):
     """Mark a vault as unlocked in the server state"""
     server_state.unlocked_sessions[session_id] = True
+    
+    # Create a flag file to indicate unlocked status
+    flag_file = os.path.join(st.session_state.shared_storage_dir, f"{session_id}_unlocked")
+    with open(flag_file, "w") as f:
+        f.write(str(time.time()))
 
 def check_vault_unlocked(session_id):
     """Check if the vault has been unlocked for this session"""
@@ -258,7 +289,13 @@ def check_vault_unlocked(session_id):
     if session_id in server_state.unlocked_sessions:
         return server_state.unlocked_sessions[session_id]
     
-    # Then check the file system (more reliable but slower)
+    # Then check for the flag file (more reliable across sessions)
+    flag_file = os.path.join(st.session_state.shared_storage_dir, f"{session_id}_unlocked")
+    if os.path.exists(flag_file):
+        server_state.unlocked_sessions[session_id] = True
+        return True
+    
+    # Finally check the metadata file
     session_dir = os.path.join(st.session_state.shared_storage_dir, session_id)
     try:
         with open(os.path.join(session_dir, "metadata.json"), "r") as f:
@@ -268,6 +305,10 @@ def check_vault_unlocked(session_id):
         # Update our server-side cache
         if is_unlocked:
             server_state.unlocked_sessions[session_id] = True
+            # Create the flag file if it doesn't exist
+            if not os.path.exists(flag_file):
+                with open(flag_file, "w") as f:
+                    f.write(str(time.time()))
             
         return is_unlocked
     except:
@@ -333,7 +374,7 @@ def decrypt_vault(session_dir):
         with open(os.path.join(session_dir, "metadata.json"), "w") as f:
             json.dump(session_meta, f)
         
-        # Mark as unlocked in server state
+        # Mark as unlocked in server state and create flag file
         mark_vault_unlocked(os.path.basename(session_dir))
         
         return True, "Vault successfully unlocked"
@@ -533,8 +574,7 @@ def main():
                     encrypted_file = st.file_uploader(
                         "Upload encrypted document (Primary Shareholder only)",
                         type=["enc"],
-                        key="enc_uploader",
-                        help="Upload the .enc file received during encryption"
+                        key="enc_uploader"
                     )
                     
                     encrypted_path = os.path.join(session_dir, "encrypted.enc")
@@ -550,24 +590,24 @@ def main():
                         st.session_state.encrypted_file_uploaded = True
                         st.success("✅ Encrypted document uploaded successfully!")
                     
-                    # Store AES key field
-                    key_input = st.text_area(
+                    # Store AES key field with a dedicated button
+                    key_input = st.text_input(
                         "Enter Security Key (Primary Shareholder only)",
-                        key="key_input",
-                        help="Paste the base64-encoded security key received during encryption"
+                        key="security_key_input"
                     )
+                    
+                    # Add a dedicated button to save the key
+                    if st.button("Save Security Key", key="save_security_key"):
+                        key_path = os.path.join(session_dir, "aes_key.txt")
+                        with open(key_path, "w") as f:
+                            f.write(key_input)
+                        st.session_state.aes_key_entered = True
+                        st.success("✅ Security key saved successfully!")
                     
                     key_path = os.path.join(session_dir, "aes_key.txt")
                     
                     # Check if we already entered the key
                     if os.path.exists(key_path):
-                        st.session_state.aes_key_entered = True
-                        st.success("✅ Security key verified!")
-                    
-                    # Handle new key input
-                    if key_input and len(key_input) > 0 and not st.session_state.aes_key_entered:
-                        with open(key_path, "w") as f:
-                            f.write(key_input)
                         st.session_state.aes_key_entered = True
                         st.success("✅ Security key verified!")
                     
@@ -649,7 +689,7 @@ def main():
                                         share_file = st.file_uploader(
                                             "Upload your shareholder key",
                                             type=["png", "jpg", "jpeg"],
-                                            key=f"party_share_upload_{party_name}"
+                                            key="party_share_upload"
                                         )
                                         
                                         if share_file:
@@ -662,28 +702,6 @@ def main():
                                                 json.dump(session_meta, f)
                                             
                                             st.success(f"✅ Shareholder key verified! ({session_meta['uploaded_shares']}/{session_meta['required_shares']} keys submitted)")
-                                            
-                                            # Check if all shares are now uploaded and auto-decrypt
-                                            if session_meta["uploaded_shares"] >= session_meta["required_shares"]:
-                                                st.markdown("""
-                                                <div class='success-message'>
-                                                ✅ All required shareholder keys have been submitted!
-                                                </div>
-                                                """, unsafe_allow_html=True)
-                                                
-                                                # Check if we have the encrypted file and key
-                                                enc_path = os.path.join(session_dir, "encrypted.enc")
-                                                key_path = os.path.join(session_dir, "aes_key.txt")
-                                                
-                                                if os.path.exists(enc_path) and os.path.exists(key_path):
-                                                    # Automatically decrypt
-                                                    success, message = decrypt_vault(session_dir)
-                                                    
-                                                    if success:
-                                                        st.success("🔓 Vault has been successfully unlocked!")
-                                                        display_vault_files()
-                                                    else:
-                                                        st.error(f"❌ Vault access failed: {message}")
                                 
                                 # Check if all shares are uploaded
                                 if session_meta["uploaded_shares"] >= session_meta["required_shares"]:
@@ -697,22 +715,22 @@ def main():
                                     if check_vault_unlocked(session_id):
                                         st.success("🔓 Vault has been successfully unlocked!")
                                         display_vault_files()
+                                    else:
+                                        # Check if we have the encrypted file and key
+                                        enc_path = os.path.join(session_dir, "encrypted.enc")
+                                        key_path = os.path.join(session_dir, "aes_key.txt")
+                                        
+                                        if os.path.exists(enc_path) and os.path.exists(key_path):
+                                            # Automatically decrypt
+                                            success, message = decrypt_vault(session_dir)
+                                            
+                                            if success:
+                                                st.success("🔓 Vault has been successfully unlocked!")
+                                                display_vault_files()
+                                            else:
+                                                st.error(f"❌ Vault access failed: {message}")
                         except Exception as e:
                             st.error(f"Error loading session: {str(e)}")
-
-    # Add auto-refresh to check for vault unlocking
-    if st.session_state.current_session_id:
-        session_id = st.session_state.current_session_id
-        # Add JavaScript for auto-refresh
-        st.markdown("""
-        <div class="auto-refresh">
-        <script>
-            setTimeout(function() {
-                window.location.reload();
-            }, 3000);
-        </script>
-        </div>
-        """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
